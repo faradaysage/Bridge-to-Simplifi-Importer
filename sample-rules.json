@@ -1,0 +1,12 @@
+{
+  "rules": [
+    {
+      "match": { "field": "payee", "type": "contains", "value": "Joe" },
+      "set":   { "category": "Allowance", "payee": "Joseph Bradley", "tags": ["Allowance"] }
+    },
+    {
+      "match": { "field": "notes", "type": "contains", "value": "lawn" },
+      "set":   { "category": "Lawn Care", "payee": "Green Lawn LLC", "tags": ["Lawn"] }
+    }
+  ]
+}
