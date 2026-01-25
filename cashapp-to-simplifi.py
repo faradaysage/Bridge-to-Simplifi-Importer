@@ -277,10 +277,13 @@ class IRowDedupeStore(Protocol):
 
 class FileRowDedupeStore(IRowDedupeStore):
     """
-    Stores keys and checksums in a text file (tab-separated): key<TAB>checksum
+    Stores seen rows in a strict text format.
 
-    Backward compatible with old "one key per line" files:
-    - If a line has no tab, checksum is treated as unknown for that key.
+    Supported formats (and only these):
+    - ROW:<sha256>                (no tab; checksum is embedded in the key)
+    - TXID:<id><TAB><sha256>      (tab-separated; checksum stored as value)
+
+    Any other line format is invalid and should fail.
     """
     def __init__(self, path: Path, notifier: Notifier) -> None:
         self._path = path
@@ -292,22 +295,50 @@ class FileRowDedupeStore(IRowDedupeStore):
     def try_get_checksum(self, key: str) -> Optional[str]:
         if key not in self._seen:
             return None
-        checksum = self._seen.get(key, "")
-        return checksum if checksum else ""
+
+        # ROW:<checksum> embeds the checksum in the key.
+        if key.startswith("ROW:"):
+            embedded = key.split(":", 1)[1].strip()
+            if not embedded:
+                raise ValueError(f"Invalid seen-rows key (empty ROW checksum): {key}")
+            return embedded
+
+        checksum = self._seen.get(key, "").strip()
+        if not checksum:
+            raise ValueError(f"Invalid seen-rows entry (missing checksum for key): {key}")
+        return checksum
 
     def upsert(self, key: str, checksum: str) -> None:
+        checksum = (checksum or "").strip()
+        if not checksum:
+            raise ValueError(f"Cannot upsert empty checksum (key={key})")
+
+        # ROW keys embed the checksum, so the stored value is intentionally blank.
+        value = "" if key.startswith("ROW:") else checksum
+
         cur = self._seen.get(key, "")
-        if cur != checksum:
-            self._seen[key] = checksum
+        if cur != value:
+            self._seen[key] = value
             self._dirty = True
 
     def flush(self) -> None:
         if not self._dirty:
             return
+
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        lines = []
+
+        lines: List[str] = []
         for k in sorted(self._seen.keys()):
-            lines.append(f"{k}\t{self._seen[k]}")
+            if k.startswith("ROW:"):
+                # Strict: ROW format is key-only.
+                lines.append(k)
+                continue
+
+            v = (self._seen.get(k, "") or "").strip()
+            if not v:
+                raise ValueError(f"Invalid seen-rows entry (missing checksum for key): {k}")
+            lines.append(f"{k}\t{v}")
+
         self._path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         self._dirty = False
         self._notifier.debug("Seen-rows store flushed", path=str(self._path), keys=len(self._seen))
@@ -315,16 +346,37 @@ class FileRowDedupeStore(IRowDedupeStore):
     def _load(self) -> None:
         if not self._path.exists():
             return
+
         text = self._path.read_text(encoding="utf-8")
-        for line in text.splitlines():
+        for line_num, line in enumerate(text.splitlines(), start=1):
             raw = line.strip()
             if not raw:
                 continue
+
             if "\t" in raw:
                 k, c = raw.split("\t", 1)
-                self._seen[k] = c.strip()
-            else:
-                self._seen[raw] = ""
+                k = k.strip()
+                c = c.strip()
+
+                if not k or not c:
+                    raise ValueError(f"Invalid seen-rows line {line_num}: {raw}")
+
+                if k.startswith("ROW:"):
+                    raise ValueError(f"Invalid seen-rows line {line_num} (ROW cannot have checksum column): {raw}")
+
+                self._seen[k] = c
+                continue
+
+            # No-tab lines are only allowed for ROW:<sha256>
+            if not raw.startswith("ROW:"):
+                raise ValueError(f"Invalid seen-rows line {line_num} (expected TAB or ROW:<sha256>): {raw}")
+
+            embedded = raw.split(":", 1)[1].strip()
+            if not embedded:
+                raise ValueError(f"Invalid seen-rows line {line_num} (empty ROW checksum): {raw}")
+
+            self._seen[raw] = ""
+
         self._notifier.debug("Seen-rows store loaded", path=str(self._path), keys=len(self._seen))
 
 
@@ -581,7 +633,7 @@ class CashAppCsvImporter(CsvImporterBase):
                 if context.dedupe_store:
                     prior = context.dedupe_store.try_get_checksum(dedupe_key)
                     if prior is not None:
-                        if prior and prior != checksum:
+                        if prior != checksum:
                             notifier.warning(
                                 "Seen key has checksum mismatch",
                                 row=row_num,
@@ -904,7 +956,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--import", dest="import_uri", required=True, help="Import URI/path (e.g. cashapp.csv or file:///... )")
     ap.add_argument("--export", dest="export_uri", required=True, help="Export URI/path for Simplifi CSV (e.g. out.csv)")
     ap.add_argument("--seen-rows", default="", help="Path to seen rows file (optional). Recommended to prevent duplicates across runs.")
-    ap.add_argument("--seen-ids", default="", help="Deprecated alias for --seen-rows")
     ap.add_argument("--rules", default="", help="Path to rules.json (optional).")
     ap.add_argument("--include-types", default="", help="Comma-separated Cash App Transaction Types to include (default: ALL)")
     ap.add_argument("--status", default="COMPLETE", help="Comma-separated Cash App Status values to include (default: COMPLETE)")
@@ -923,12 +974,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     statuses = _parse_csv_set(args.status)
 
     # Seen rows store is optional but strongly recommended.
-    seen_rows_path = args.seen_rows.strip() or args.seen_ids.strip()
+    seen_rows_path = args.seen_rows.strip()
     dedupe_store: Optional[IRowDedupeStore] = None
     if seen_rows_path:
         dedupe_store = FileRowDedupeStore(Path(seen_rows_path).expanduser().resolve(), notifier)
-        if args.seen_ids.strip() and not args.seen_rows.strip():
-            notifier.warning("Using deprecated --seen-ids; prefer --seen-rows", path=seen_rows_path)
 
     export_path = export_uri.as_path()
     skip_report_path = export_path.with_name(export_path.name + ".skipped.csv")
