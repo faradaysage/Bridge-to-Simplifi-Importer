@@ -1141,7 +1141,7 @@ def _rules_paths(raw_rules: str, provider: Provider, notifier: Notifier) -> List
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Bridge financial exports into Simplifi import CSV")
 
-    provider_group = ap.add_mutually_exclusive_group(required=True)
+    provider_group = ap.add_mutually_exclusive_group(required=False)
     provider_group.add_argument("--cashapp", action="store_true", help="Import a Cash App CSV export")
     provider_group.add_argument("--venmo", action="store_true", help="Import a Venmo Account Statement CSV export")
 
@@ -1191,8 +1191,33 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     buffered = BufferedSink()
     console = ConsoleSink(min_level=LogLevel.DEBUG if args.debug else LogLevel.INFO, enable_color=True)
     notifier = Notifier([buffered, console])
+    
+    def _detect_provider_from_csv(path: Path) -> Provider:
+        with path.open("r", encoding="utf-8-sig", newline="") as f:
+            for _ in range(25):
+                line = f.readline()
+                if not line:
+                    break
+                s = line.strip()
 
-    provider = Provider.CASHAPP if args.cashapp else Provider.VENMO
+                if s.startswith(",ID,") and "Datetime" in s and "Amount (total)" in s:
+                    return Provider.VENMO
+
+                if "Transaction ID" in s and "Transaction Type" in s and "Amount" in s:
+                    return Provider.CASHAPP
+
+        raise ValueError("Unable to infer provider from CSV header")
+
+
+    if args.cashapp:
+        provider = Provider.CASHAPP
+    elif args.venmo:
+        provider = Provider.VENMO
+    else:
+        src_path = Uri(import_uri_raw).as_path()
+        notifier.info("No provider flag supplied; attempting auto-detection", path=str(src_path))
+        provider = _detect_provider_from_csv(src_path)
+        notifier.info("Auto-detected provider", provider=provider.value)
 
     import_uri = Uri(import_uri_raw)
     export_uri = Uri(export_uri_raw)
