@@ -1,6 +1,6 @@
-# CashApp → Simplifi Import Bridge
+# Exports → Simplifi Import Bridge (Cash App + Venmo)
 
-A robust, extensible bridge for converting Cash App exports into **Quicken Simplifi** CSV imports.
+A robust, extensible bridge for converting supported provider exports into **Quicken Simplifi** CSV imports.
 
 This project is intentionally architected as more than a one-off script. It is designed as a foundation for:
 - Supporting additional financial institutions
@@ -40,25 +40,63 @@ python --version
 
 ## Basic Usage
 
+Cash App:
+
 ```bash
-python cashapp-to-simplifi.py \
-  --input cashapp-export.csv \
-  --output simplifi-import.csv
+python bridge-to-simplifi.py \
+  --cashapp \
+  --import cashapp-export.csv \
+  --export simplifi-import.csv
+```
+
+Venmo:
+
+```bash
+python bridge-to-simplifi.py \
+  --venmo \
+  --import venmo-statement.csv \
+  --export simplifi-import.csv
 ```
 
 ---
+
+## Required Provider Flag
+
+You must explicitly declare which provider you are importing:
+
+- `--cashapp`
+- `--venmo`
+
+This is intentional, to avoid accidental mis-parsing and to keep rules/dedupe state organized.
 
 ## Optional Flags
 
 | Flag | Purpose |
 |------|--------|
-| `--seen-rows seen.json` | Enables deduplication across runs |
-| `--rules rules.json` | Applies transformation rules |
+| `--seen-rows PATH` | Enables deduplication across runs (provider-scoped by default) |
+| `--rules PATH` | Applies transformation rules (global + provider-specific by default) |
 | `--debug` | Emits verbose diagnostics |
 | `--dry-run` | Runs pipeline without writing output |
-| `--skip-report skipped.csv` | Writes skipped-row audit report |
+| `--skip-report PATH` | Writes skipped-row audit report (default: alongside export) |
+| `--include-types ...` | Provider transaction type filter (Cash App or Venmo) |
+| `--status ...` | Provider status filter (Cash App or Venmo) |
 
 ---
+
+## Rules + Seen-Rows Naming Conventions
+
+By default, the script looks for both a global rules file and a provider-specific rules file:
+
+- `rules.json` (global)
+- `rules-cashapp.json` or `rules-venmo.json` (provider)
+
+For deduplication state, the default seen-rows file is provider-scoped:
+
+- `seen-rows-cashapp.txt`
+- `seen-rows-venmo.txt`
+
+If you pass `--rules` or `--seen-rows`, a provider-specific variant is inferred unless the filename
+already includes the provider. You can also use `{provider}` token in the path.
 
 ## How Deduplication Works (`--seen-rows`)
 
@@ -89,9 +127,10 @@ Now you want to import the **rest**, without duplicating prior entries.
 Edit your Cash App export to **include transactions already present in Simplifi**
 
 ```bash
-python cashapp-to-simplifi.py \
-  --input cashapp-export-with-old.csv \
-  --seen-rows seen.json \
+python bridge-to-simplifi.py \
+  --cashapp \
+  --import cashapp-export-with-old.csv \
+  --seen-rows seen-rows-{provider}.txt \
   --dry-run
 ```
 
@@ -99,10 +138,11 @@ This seeds the dedupe database without exporting anything.
 
 #### Step 2 — Run the real import on the full export
 ```bash
-python cashapp-to-simplifi.py \
-  --input cashapp-export-full.csv \
-  --seen-rows seen.json \
-  --output simplifi-import.csv
+python bridge-to-simplifi.py \
+  --cashapp \
+  --import cashapp-export-full.csv \
+  --seen-rows seen-rows-{provider}.txt \
+  --export simplifi-import.csv
 ```
 
 Result:
@@ -134,21 +174,12 @@ Rules allow transformation **without modifying the script**.
 {
   "rules": [
     {
-      "match": {
-        "payee_contains": "STARBUCKS"
-      },
-      "set": {
-        "category": "Coffee",
-        "tags": ["food", "treat"]
-      }
+      "match": { "field": "payee", "type": "contains", "value": "STARBUCKS" },
+      "set":   { "category": "Coffee", "tags": ["food", "treat"] }
     },
     {
-      "match": {
-        "notes_contains": "VENMO"
-      },
-      "set": {
-        "payee": "Venmo Transfer"
-      }
+      "match": { "field": "notes", "type": "contains", "value": "VENMO" },
+      "set":   { "payee": "Venmo Transfer" }
     }
   ]
 }
@@ -200,24 +231,25 @@ This ensures **no silent data loss**
 
 ### Import New Transactions Weekly
 ```bash
-python cashapp-to-simplifi.py \
-  --input cashapp-latest.csv \
-  --seen-rows seen.json \
-  --output simplifi.csv
+python bridge-to-simplifi.py \
+  --cashapp \
+  --import cashapp-latest.csv \
+  --export simplifi.csv
 ```
 
 ### Dry Run Before Real Import
 ```bash
-python cashapp-to-simplifi.py \
-  --input cashapp.csv \
-  --seen-rows seen.json \
+python bridge-to-simplifi.py \
+  --cashapp \
+  --import cashapp.csv \
   --dry-run
 ```
 
 ### Debug Skipped Rows
 ```bash
-python cashapp-to-simplifi.py \
-  --input cashapp.csv \
+python bridge-to-simplifi.py \
+  --cashapp \
+  --import cashapp.csv \
   --debug \
   --skip-report skipped.csv
 ```
