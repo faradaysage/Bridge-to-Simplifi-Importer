@@ -71,9 +71,15 @@ try {
 
     Write-Host "`n> $python $($args -join ' ')" -ForegroundColor DarkGray
 
-    & $python @args
-    if ($LASTEXITCODE -ne 0) {
-      throw "Bridge failed for $($file.Name)"
+    Push-Location $file.DirectoryName
+    try {
+      & $python @args
+      if ($LASTEXITCODE -ne 0) {
+        throw "Bridge failed for $($file.Name)"
+      }
+    }
+    finally {
+      Pop-Location
     }
 
     if (-not (Test-Path $outPath)) {
