@@ -42,8 +42,9 @@ try {
   if (-not (Test-Path $bridgePy)) { throw "Missing bridge script: $bridgePy" }
   if (-not (Test-Path $mergePy))  { throw "Missing CSV merger:  $mergePy" }
 
-  # Expand wildcard explicitly
-  $inputs = Get-ChildItem -Path $InputPattern -File | Sort-Object Name
+  # Expand wildcard explicitly (always an array)
+  $inputs = @(Get-ChildItem -Path $InputPattern -File | Sort-Object Name)
+
   if ($inputs.Count -eq 0) {
     throw "No files matched pattern: $InputPattern"
   }
